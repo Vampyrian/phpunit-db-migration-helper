@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+#
+# Manage GitHub releases for this package.
+#
+# Usage:
+#   bin/release create <major|minor|patch|X.Y.Z[-pre]> [--pre <label>] [--draft] [--dry-run]
+#   bin/release list
+#   bin/release delete <X.Y.Z[-pre]> [--dry-run]
+#
+# Examples:
+#   Promote / bump (current version is read from composer.json):
+#     bin/release create patch                # 0.1.0-alpha -> 0.1.0  (promote pre-release)
+#     bin/release create patch                # 0.1.0 -> 0.1.1
+#     bin/release create minor                # 0.1.1 -> 0.2.0
+#     bin/release create major                # 0.2.0 -> 1.0.0
+#
+#   Pre-releases (published on GitHub as "pre-release"):
+#     bin/release create minor --pre beta     # 0.1.0 -> 0.2.0-beta
+#     bin/release create major --pre rc       # 0.2.0 -> 1.0.0-rc
+#     bin/release create patch --pre alpha    # 0.1.0 -> 0.1.1-alpha
+#     bin/release create 1.0.0-rc.2           # explicit pre-release label
+#
+#   Explicit versions:
+#     bin/release create 1.0.0                # set version exactly
+#     bin/release create 0.1.0-alpha          # tag current version without bumping
+#
+#   Safe runs:
+#     bin/release create minor --dry-run      # print every step, change nothing
+#     bin/release create 1.0.0 --draft        # create an unpublished draft release
+#     bin/release create major --pre rc --draft --dry-run
+#
+#   Inspect / clean up:
+#     bin/release list                        # show GitHub releases
+#     bin/release delete 0.2.0-beta           # delete release + tag (asks to confirm)
+#     bin/release delete v0.2.0-beta          # leading "v" is accepted
+#     bin/release delete 0.2.0-beta --dry-run
+#
+# Requires: git, php, composer deps installed, GitHub CLI (`gh`) authenticated.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+MAIN_BRANCH="main"
+REMOTE="origin"
+DRY_RUN=0
+
+die()  { echo "error: $*" >&2; exit 1; }
+info() { echo "==> $*"; }
+run()  {
+    if [[ $DRY_RUN -eq 1 ]]; then
+        echo "[dry-run] $*"
+    else
+        "$@"
+    fi
+}
+
+usage() {
+    sed -n '3,/^# Requires/p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+require_tools() {
+    command -v git >/dev/null || die "git is not installed"
+    command -v php >/dev/null || die "php is not installed"
+    command -v gh  >/dev/null || die "GitHub CLI is not installed (brew install gh)"
+    gh auth status >/dev/null 2>&1 || die "GitHub CLI is not authenticated (gh auth login)"
+}
+
+current_version() {
+    php -r 'echo json_decode(file_get_contents("composer.json"), true)["version"] ?? "0.0.0";'
+}
+
+# Resolve the next version from the current one and a bump spec.
+next_version() {
+    local current="$1" spec="$2" pre="$3"
+    local base="${current%%-*}"
+    local had_pre=0
+    [[ "$current" == *-* ]] && had_pre=1
+
+    local major minor patch
+    IFS=. read -r major minor patch <<< "$base"
+
+    case "$spec" in
+        major) major=$((major + 1)); minor=0; patch=0 ;;
+        minor) minor=$((minor + 1)); patch=0 ;;
+        patch)
+            # Promoting a pre-release (0.1.0-alpha -> 0.1.0) keeps the same base.
+            if [[ $had_pre -eq 0 || -n "$pre" ]]; then
+                patch=$((patch + 1))
+            fi
+            ;;
+        *)
+            [[ "$spec" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+                || die "invalid version '$spec' (expected major|minor|patch|X.Y.Z[-pre])"
+            echo "$spec"
+            return
+            ;;
+    esac
+
+    local version="$major.$minor.$patch"
+    [[ -n "$pre" ]] && version="$version-$pre"
+    echo "$version"
+}
+
+set_composer_version() {
+    local version="$1"
+    php -r '
+        $file = "composer.json";
+        $json = file_get_contents($file);
+        $new  = preg_replace("/(\"version\"\s*:\s*\")[^\"]*(\")/", "\${1}" . $argv[1] . "\${2}", $json, 1, $count);
+        if ($count !== 1) { fwrite(STDERR, "version field not found in composer.json\n"); exit(1); }
+        file_put_contents($file, $new);
+    ' "$version"
+}
+
+check_repo_state() {
+    local branch
+    branch="$(git rev-parse --abbrev-ref HEAD)"
+    [[ "$branch" == "$MAIN_BRANCH" ]] || die "must be on '$MAIN_BRANCH' (currently on '$branch')"
+    [[ -z "$(git status --porcelain)" ]] || die "working tree is not clean"
+
+    info "Fetching $REMOTE"
+    git fetch --quiet --tags "$REMOTE"
+    local local_sha remote_sha
+    local_sha="$(git rev-parse HEAD)"
+    remote_sha="$(git rev-parse "$REMOTE/$MAIN_BRANCH")"
+    [[ "$local_sha" == "$remote_sha" ]] \
+        || die "'$MAIN_BRANCH' is not in sync with '$REMOTE/$MAIN_BRANCH' (pull or push first)"
+}
+
+cmd_create() {
+    local spec="" pre="" draft=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --pre)     pre="${2:-}"; [[ -n "$pre" ]] || die "--pre requires a label"; shift 2 ;;
+            --draft)   draft=1; shift ;;
+            --dry-run) DRY_RUN=1; shift ;;
+            -h|--help) usage ;;
+            -*)        die "unknown option '$1'" ;;
+            *)         [[ -z "$spec" ]] || die "unexpected argument '$1'"; spec="$1"; shift ;;
+        esac
+    done
+    [[ -n "$spec" ]] || usage 1
+
+    require_tools
+    check_repo_state
+
+    local current version tag
+    current="$(current_version)"
+    version="$(next_version "$current" "$spec" "$pre")"
+    tag="v$version"
+
+    git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already exists"
+
+    info "Releasing $current -> $version ($tag)"
+
+    info "Running tests"
+    composer test
+
+    if [[ "$version" != "$current" ]]; then
+        info "Bumping composer.json version"
+        if [[ $DRY_RUN -eq 1 ]]; then
+            echo "[dry-run] set composer.json version to $version"
+        else
+            set_composer_version "$version"
+        fi
+        run git add composer.json
+        run git commit -m "release $tag"
+    fi
+
+    run git tag -a "$tag" -m "Release $tag"
+    run git push "$REMOTE" "$MAIN_BRANCH"
+    run git push "$REMOTE" "$tag"
+
+    local gh_args=(release create "$tag" --title "$tag" --generate-notes --verify-tag)
+    [[ "$version" == *-* ]] && gh_args+=(--prerelease)
+    [[ $draft -eq 1 ]]      && gh_args+=(--draft)
+    run gh "${gh_args[@]}"
+
+    info "Done: $tag"
+}
+
+cmd_list() {
+    require_tools
+    gh release list
+}
+
+cmd_delete() {
+    local version=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run) DRY_RUN=1; shift ;;
+            -h|--help) usage ;;
+            -*)        die "unknown option '$1'" ;;
+            *)         version="${1#v}"; shift ;;
+        esac
+    done
+    [[ -n "$version" ]] || usage 1
+    require_tools
+
+    local tag="v$version"
+    read -r -p "Delete GitHub release and tag $tag (local + remote)? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
+
+    run gh release delete "$tag" --yes --cleanup-tag
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        run git tag -d "$tag"
+    fi
+    info "Deleted $tag (the release commit on $MAIN_BRANCH is left untouched)"
+}
+
+main() {
+    [[ $# -gt 0 ]] || usage 1
+    local cmd="$1"; shift
+    case "$cmd" in
+        create) cmd_create "$@" ;;
+        list)   cmd_list ;;
+        delete) cmd_delete "$@" ;;
+        -h|--help|help) usage ;;
+        *) die "unknown command '$cmd'" ;;
+    esac
+}
+
+main "$@"

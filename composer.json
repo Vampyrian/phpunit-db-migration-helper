@@ -18,9 +18,11 @@
     "phpunit/phpunit": "^13"
   },
   "scripts": {
-    "test": "./vendor/bin/phpunit tests"
+    "test": "./vendor/bin/phpunit tests",
+    "suites": "./vendor/bin/phpunit --list-suites"
   },
   "require": {
-    "vampyrian/container": "^0.1.0"
+    "vampyrian/container": "^0.1.0",
+    "ext-pdo": "*"
   }
 }
