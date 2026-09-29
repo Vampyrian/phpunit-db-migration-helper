@@ -1,0 +1,26 @@
+{
+  "name": "vampyrian/phpunit-db-migration",
+  "version": "0.1.0",
+  "license": "MIT",
+  "php": "^8.5",
+  "autoload": {
+    "psr-4": {
+      "Vampyrian\\Migration\\": "src/"
+    }
+  },
+  "authors": [
+    {
+      "name": "Žilvinas Mačius",
+      "email": "zivinas.macius@gmail.com"
+    }
+  ],
+  "require-dev": {
+    "phpunit/phpunit": "^13"
+  },
+  "scripts": {
+    "test": "./vendor/bin/phpunit tests"
+  },
+  "require": {
+    "vampyrian/container": "^0.1.0"
+  }
+}
