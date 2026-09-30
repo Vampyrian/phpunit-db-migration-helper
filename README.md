@@ -63,7 +63,7 @@ A file may contain several statements.
 
 ## 3. Use the trait in your test
 
-Your test needs only two things: the trait and the path to your migrations folder.
+Your test needs three things: use the trait, overwrite the path to your migrations folder and overwrite the connect method.
 
 ```php
 <?php
@@ -82,6 +82,21 @@ class UserTest extends TestCase
     protected static function migrationsPath(): string
     {
         return __DIR__ . '/custom_migration_folder';
+    }
+    
+    protected static function connect(): PDO
+    {
+        $dsn = sprintf(
+            'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+            $_ENV['DB_HOST'],
+            $_ENV['DB_PORT'],
+            $_ENV['DB_DATABASE'],
+        );
+
+        return new PDO($dsn, $_ENV['DB_USERNAME'], $_ENV['DB_PASSWORD'], [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
     }
 
     public function testUserCanBeCreated(): void

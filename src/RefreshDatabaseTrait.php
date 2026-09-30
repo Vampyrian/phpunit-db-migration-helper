@@ -69,7 +69,7 @@ trait RefreshDatabaseTrait
         return __DIR__ . '/migrations';
     }
 
-    private static function connect(): PDO
+    protected static function connect(): PDO
     {
         $dsn = sprintf(
             'mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
