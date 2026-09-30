@@ -121,7 +121,7 @@ Adding a new file (e.g. `2026-10-01.sql`) runs just that file on the next test r
 
 ## Using the connection in your application code
 
-The connection is registered as a singleton `PDO` in [`vampyrian/container`](https://packagist.org/packages/vampyrian/container). Any class resolved through the container gets the same connection, so its writes are rolled back too:
+The connection is registered as a singleton `PDO` in [`vampyrian/container`](https://github.com/Vampyrian/container). Any class resolved through the container gets the same connection, so its writes are rolled back too:
 
 ```php
 use function Vampyrian\Container\Container\container;
